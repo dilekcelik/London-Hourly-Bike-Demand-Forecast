@@ -171,3 +171,6 @@ if st.button("🔮 Predict Demand"):
     fig.update_traces(texttemplate="%{text:.0f}", textposition="outside")
     fig.update_layout(showlegend=False, height=400)
     st.plotly_chart(fig, use_container_width=True)
+
+
+st.map(pd.DataFrame({"lat": [51.5072], "lon": [-0.1276]}), zoom=11)
