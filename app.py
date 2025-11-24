@@ -11,7 +11,7 @@ import plotly.express as px
 # =====================================================
 @st.cache_resource
 def load_model():
-    with open("xgb_hourly_demand_with_weather.pkl", "rb") as file:
+    with open("xgb_hourly_demand.pkl", "rb") as file:
         model_package = pickle.load(file)
     return model_package
 
