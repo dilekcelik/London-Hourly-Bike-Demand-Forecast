@@ -2,15 +2,16 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import pickle
+import requests
+from datetime import datetime, date
 import plotly.express as px
-from datetime import datetime
 
 # =====================================================
-# Load Model and Scaler
+# 1️⃣ Load Model & Scaler
 # =====================================================
 @st.cache_resource
 def load_model():
-    with open("xgb_hourly_demand.pkl", "rb") as file:
+    with open("xgb_hourly_demand_with_weather.pkl", "rb") as file:
         model_package = pickle.load(file)
     return model_package
 
@@ -20,104 +21,152 @@ scaler = model_package["scaler"]
 feature_columns = model_package["feature_columns"]
 
 # =====================================================
-# Helper Functions
+# 2️⃣ Fetch Weather Data
+# =====================================================
+def fetch_weather(selected_date: date, latitude=51.5072, longitude=-0.1276):
+    """Fetch weather for a given date (historical or forecast)."""
+    today = datetime.utcnow().date()
+    selected_str = selected_date.strftime("%Y-%m-%d")
+
+    # Determine API type
+    if selected_date < today:
+        # Historical (ERA5 archive)
+        url = (
+            f"https://archive-api.open-meteo.com/v1/era5?"
+            f"latitude={latitude}&longitude={longitude}"
+            f"&start_date={selected_str}&end_date={selected_str}"
+            f"&hourly=temperature_2m,relative_humidity_2m,precipitation,wind_speed_10m,cloudcover"
+        )
+    else:
+        # Forecast / current
+        url = (
+            f"https://api.open-meteo.com/v1/forecast?"
+            f"latitude={latitude}&longitude={longitude}"
+            f"&hourly=temperature_2m,relative_humidity_2m,wind_speed_10m,precipitation,cloudcover"
+        )
+
+    try:
+        r = requests.get(url)
+        r.raise_for_status()
+        data = r.json()
+        hourly = pd.DataFrame({
+            "datetime": pd.to_datetime(data["hourly"]["time"]),
+            "temperature_2m": data["hourly"]["temperature_2m"],
+            "relative_humidity_2m": data["hourly"].get("relative_humidity_2m", [np.nan]*24),
+            "precipitation": data["hourly"].get("precipitation", [np.nan]*24),
+            "wind_speed_10m": data["hourly"].get("wind_speed_10m", [np.nan]*24),
+            "cloudcover": data["hourly"].get("cloudcover", [np.nan]*24)
+        })
+        return hourly
+    except Exception as e:
+        st.error(f"⚠️ Weather fetch failed: {e}")
+        return None
+
+# =====================================================
+# 3️⃣ Feature Creation
 # =====================================================
 def create_features(date, hour, temp, humidity, precipitation, windspeed, cloudcover):
-    """Generate feature row with cyclic encodings."""
     dt = pd.to_datetime(date)
-
-    # Compute cyclical encodings
-    hour_sin = np.sin(hour / 24 * 2 * np.pi)
-    hour_cos = np.cos(hour / 24 * 2 * np.pi)
-    month_sin = np.sin(dt.month / 12 * 2 * np.pi)
-    month_cos = np.cos(dt.month / 12 * 2 * np.pi)
-    dow_sin = np.sin(dt.weekday() / 7 * 2 * np.pi)
-    dow_cos = np.cos(dt.weekday() / 7 * 2 * np.pi)
-    season = ((dt.month % 12 + 3) // 3)  # 1–4
-    season_sin = np.sin(season / 4 * 2 * np.pi)
-    season_cos = np.cos(season / 4 * 2 * np.pi)
-    is_weekend = 1 if dt.weekday() >= 5 else 0
+    season = ((dt.month % 12 + 3) // 3)
 
     row = {
-        "hour_sin": hour_sin,
-        "hour_cos": hour_cos,
-        "month_sin": month_sin,
-        "month_cos": month_cos,
-        "season_sin": season_sin,
-        "season_cos": season_cos,
-        "dow_sin": dow_sin,
-        "dow_cos": dow_cos,
-        "is_weekend": is_weekend,
+        "hour_sin": np.sin(hour / 24 * 2 * np.pi),
+        "hour_cos": np.cos(hour / 24 * 2 * np.pi),
+        "month_sin": np.sin(dt.month / 12 * 2 * np.pi),
+        "month_cos": np.cos(dt.month / 12 * 2 * np.pi),
+        "season_sin": np.sin(season / 4 * 2 * np.pi),
+        "season_cos": np.cos(season / 4 * 2 * np.pi),
+        "dow_sin": np.sin(dt.weekday() / 7 * 2 * np.pi),
+        "dow_cos": np.cos(dt.weekday() / 7 * 2 * np.pi),
+        "is_weekend": int(dt.weekday() >= 5),
         "temperature_2m": temp,
         "relative_humidity_2m": humidity,
         "precipitation": precipitation,
         "wind_speed_10m": windspeed,
-        "cloudcover": cloudcover,
+        "cloudcover": cloudcover
     }
-
     df = pd.DataFrame([row])
     df = df.reindex(columns=feature_columns, fill_value=0)
     return df
 
-
 def predict_hourly_demand(input_df):
     scaled = scaler.transform(input_df)
-    prediction = model.predict(scaled)[0]
-    return prediction
+    return model.predict(scaled)[0]
 
-
-def predict_full_day(date, temp, humidity, precipitation, windspeed, cloudcover):
-    """Predict demand for all 24 hours of the selected day."""
+def predict_full_day(selected_date, temp, humidity, precipitation, windspeed, cloudcover):
     records = []
     for hour in range(24):
-        df_hour = create_features(date, hour, temp, humidity, precipitation, windspeed, cloudcover)
+        df_hour = create_features(selected_date, hour, temp, humidity, precipitation, windspeed, cloudcover)
         pred = predict_hourly_demand(df_hour)
         records.append({"Hour": hour, "Predicted Demand": pred})
     return pd.DataFrame(records)
 
 # =====================================================
-# Streamlit UI
+# 4️⃣ Streamlit UI
 # =====================================================
-st.set_page_config(page_title="🚲 Bike Demand Prediction", layout="wide")
+st.set_page_config(page_title="🚲 Bike Demand Forecast", layout="wide")
 
-st.sidebar.title("Predicting Hourly Bike Rental Demand")
-st.sidebar.markdown("Use weather and time inputs to forecast hourly rental demand.")
+st.title("🚴 Predicting Hourly Bike Rental Demand with Weather Conditions")
+st.markdown("Use real or forecasted weather data to predict hourly bike demand in London.")
 
-# --- Inputs ---
-st.subheader("Select Date & Hour")
-col1, col2 = st.columns(2)
+col1, col2 = st.columns([2, 1])
 with col1:
-    date = st.date_input("📅 Select Date", datetime(2025, 11, 24))
+    selected_date = st.date_input("📅 Select Date", datetime(2025, 11, 24))
 with col2:
-    hour = st.slider("⏰ Hour of the Day (0–23)", 0, 23, 17)
+    selected_hour = st.slider("⏰ Hour (0–23)", 0, 23, 17)
 
-st.subheader("Enter Weather Data 🌦")
-temp = st.number_input("Temperature (°C)", value=10.0, step=0.5)
-humidity = st.number_input("Humidity (%)", value=46.0, step=1.0)
-precip = st.number_input("Precipitation (mm)", value=0.0, step=0.1)
-windspeed = st.number_input("Wind Speed (km/h)", value=9.4, step=0.5)
-cloudcover = st.number_input("Cloudcover (%)", value=45.0, step=1.0)
+# Compact Weather Section
+st.markdown("### 🌦 Weather Data (Auto or Manual)")
+col_w1, col_w2, col_w3, col_w4, col_w5 = st.columns(5)
 
-# --- Predict Button ---
+# Default values
+temp, humidity, precip, windspeed, cloudcover = 10.0, 45.0, 0.0, 9.0, 40.0
+
+# Fetch Weather Button
+if st.button("🌤 Fetch Weather Data"):
+    weather_df = fetch_weather(selected_date)
+    if weather_df is not None:
+        row = weather_df.iloc[selected_hour]
+        temp = row["temperature_2m"]
+        humidity = row["relative_humidity_2m"]
+        precip = row["precipitation"]
+        windspeed = row["wind_speed_10m"]
+        cloudcover = row["cloudcover"]
+        st.success(f"✅ Weather fetched for {selected_date} at {selected_hour}:00")
+
+# Inputs (compact)
+with col_w1:
+    temp = st.number_input("Temp (°C)", value=float(temp))
+with col_w2:
+    humidity = st.number_input("Humidity (%)", value=float(humidity))
+with col_w3:
+    precip = st.number_input("Precip (mm)", value=float(precip))
+with col_w4:
+    windspeed = st.number_input("Wind (km/h)", value=float(windspeed))
+with col_w5:
+    cloudcover = st.number_input("Cloud (%)", value=float(cloudcover))
+
+# =====================================================
+# 5️⃣ Predict
+# =====================================================
 if st.button("🔮 Predict Demand"):
-    input_df = create_features(date, hour, temp, humidity, precip, windspeed, cloudcover)
-    prediction = predict_hourly_demand(input_df)
-    st.success(f"🚲 **Predicted Hourly Demand at {hour}:00 → {prediction:.0f} bikes/hour**")
+    df_input = create_features(selected_date, selected_hour, temp, humidity, precip, windspeed, cloudcover)
+    pred = predict_hourly_demand(df_input)
 
-    # Predict entire day
-    daily_preds = predict_full_day(date, temp, humidity, precip, windspeed, cloudcover)
+    st.success(f"🚲 **Predicted Demand at {selected_hour}:00 → {pred:.0f} bikes/hour**")
 
-    # Highlight selected hour
-    daily_preds["color"] = np.where(daily_preds["Hour"] == hour, "Selected Hour", "Other Hours")
+    # Predict whole day
+    daily_df = predict_full_day(selected_date, temp, humidity, precip, windspeed, cloudcover)
+    daily_df["color"] = np.where(daily_df["Hour"] == selected_hour, "Selected Hour", "Other Hours")
 
     fig = px.bar(
-        daily_preds,
+        daily_df,
         x="Hour",
         y="Predicted Demand",
         color="color",
         color_discrete_map={"Selected Hour": "red", "Other Hours": "blue"},
-        title=f"Predicted Bike Demand Throughout {date}",
-        text="Predicted Demand"
+        text="Predicted Demand",
+        title=f"Predicted Bike Demand Throughout {selected_date}",
     )
     fig.update_traces(texttemplate="%{text:.0f}", textposition="outside")
     fig.update_layout(showlegend=False, height=400)
