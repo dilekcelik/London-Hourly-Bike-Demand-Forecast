@@ -169,8 +169,8 @@ if st.button("🔮 Predict Demand"):
         title=f"Predicted Bike Demand Throughout {selected_date}",
     )
     fig.update_traces(texttemplate="%{text:.0f}", textposition="outside")
-    fig.update_layout(showlegend=False, height=400)
+    fig.update_layout(showlegend=False, height=500)
     st.plotly_chart(fig, use_container_width=True)
 
 
-st.map(pd.DataFrame({"lat": [51.5072], "lon": [-0.1276]}), zoom=11)
+ # st.map(pd.DataFrame({"lat": [51.5072], "lon": [-0.1276]}), zoom=11)
